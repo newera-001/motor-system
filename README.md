@@ -3,7 +3,9 @@
 A code copied from google-research which named motion-imitation was rewrited with PyTorch.
 More details can get from this project. 
 
-Link:https://github.com/google-research/motion_imitation
+GIthub Link:https://github.com/google-research/motion_imitation
+
+Project Link:https://xbpeng.github.io/projects/Robotic_Imitation/index.html
 
 ## Tutorials
 For training：
