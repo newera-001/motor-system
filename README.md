@@ -15,4 +15,13 @@ For training：
 ```
 python motion_imitation/run_torch.py --mode train --motion_file motion_imitation/data/motions/dog_pace.txt --int_save_freq 10000000 --visualize
 ```
+* mode: train or test
+* motion_file: Chose which motion to imitate
+* visualize: Whether rendering or not when training
 
+For testing:
+```
+python motion_imitation/run_torch.py --mode test --motion_file motion_imitation/data/motions/dog_pace.txt --model_file 'model_file_path' --visualize
+```
+
+* model_path: There's a model parameters zip file, you just find out and copy it's path.
