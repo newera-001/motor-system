@@ -127,14 +127,11 @@ def main():
     args = arg_parser.parse_args()
 
 
-
-    num_procs = MPI.COMM_WORLD.Get_size()
-    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0"  # 这一行注释掉就是使用cpu，不注释就是使用gpu
+    num_envs = 1
 
     enable_env_rand = ENABLE_ENV_RANDOMIZER and (args.mode != "test")
     env = env_builder.build_imitation_env(motion_files=[args.motion_file],
-                                          num_parallel_envs=num_procs,
+                                          num_parallel_envs=num_envs,
                                           mode=args.mode,
                                           enable_randomizer=enable_env_rand,
                                           enable_rendering=args.visualize)
