@@ -14,13 +14,12 @@ from typing import Any, Dict, Optional, Type, Union
 import torch
 import torch.nn.functional as F
 
-from stable_baselines.common import explained_variance
 
 from stable_baselines3.common.policies import ActorCriticPolicy  # 相当于imitation_policies
 from stable_baselines3.ppo import ppo
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
 from stable_baselines3.common.vec_env import VecNormalize
-from stable_baselines3.common.utils import obs_as_tensor, safe_mean
+from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
