@@ -88,17 +88,17 @@ def test(model, env, num_procs, num_episodes=None):
     else:
         num_local_episodes = np.inf
 
-    o = env.reset()
+    obs = env.reset()
     while episode_count < num_local_episodes:
-        a, _ = model.predict(o, deterministic=True)
-        o, r, done, info = env.step(a)
+        act, _ = model.predict(obs, deterministic=True)
+        new_obs, r, done, info = env.step(act)
         curr_return += r
 
         if done:
-            o = env.reset()
+            obs = env.reset()
             sum_return += curr_return
             episode_count += 1
-
+        obs = new_obs
     sum_return = MPI.COMM_WORLD.allreduce(sum_return, MPI.SUM)
     episode_count = MPI.COMM_WORLD.allreduce(episode_count, MPI.SUM)
 
