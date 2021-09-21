@@ -128,7 +128,6 @@ def main():
 
 
     num_envs = 1
-
     enable_env_rand = ENABLE_ENV_RANDOMIZER and (args.mode != "test")
     env = env_builder.build_imitation_env(motion_files=[args.motion_file],
                                           num_parallel_envs=num_envs,
@@ -155,8 +154,6 @@ def main():
              num_episodes=args.num_test_episodes)
     else:
         assert False, "Unsupported mode: " + args.mode
-
-    return
 
 
 if __name__ == '__main__':
