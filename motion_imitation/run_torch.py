@@ -115,7 +115,7 @@ def main():
     arg_parser.add_argument("--seed", dest="seed", type=int, default=None)
     arg_parser.add_argument("--mode", dest="mode", type=str, default="train")
     arg_parser.add_argument("--motion_file", dest="motion_file", type=str,
-                            default="motion_imitation/data/motions/dog_spin.txt")
+                            default="dog_spin.txt")
     arg_parser.add_argument("--visualize", dest="visualize", action="store_true", default=False)
     arg_parser.add_argument("--output_dir", dest="output_dir", type=str, default="output")
     arg_parser.add_argument("--num_test_episodes", dest="num_test_episodes", type=int, default=None)
@@ -123,14 +123,19 @@ def main():
     arg_parser.add_argument("--total_timesteps", dest="total_timesteps", type=int, default=2e8)
     arg_parser.add_argument("--int_save_freq", dest="int_save_freq", type=int,
                             default=0)  # save intermediate model every n policy steps
+    arg_parser.add_argument('--num_envs',dest='num_envs',type=int,default=1)
 
     args = arg_parser.parse_args()
 
+    base_motion_path = 'motion_imitation/data/motions/'
+    motion_list = args.motion_file.split('|')
+    motion_files = []
+    for motion_name in motion_list:
+        motion_files.append(base_motion_path+motion_name)
 
-    num_envs = 1
-    enable_env_rand = ENABLE_ENV_RANDOMIZER and (args.mode != "test")
-    env = env_builder.build_imitation_env(motion_files=[args.motion_file],
-                                          num_parallel_envs=num_envs,
+        
+    env = env_builder.build_imitation_env(motion_files=motion_files,
+                                          num_parallel_envs=args.num_envs,
                                           mode=args.mode,
                                           enable_randomizer=enable_env_rand,
                                           enable_rendering=args.visualize)
@@ -143,14 +148,13 @@ def main():
 
     if args.mode == "train":
         train(model=model,
-              env=env,
               total_timesteps=args.total_timesteps,
               output_dir=args.output_dir,
               int_save_freq=args.int_save_freq)
     elif args.mode == "test":
         test(model=model,
              env=env,
-             num_procs=num_procs,
+             num_procs=args.num_envs,
              num_episodes=args.num_test_episodes)
     else:
         assert False, "Unsupported mode: " + args.mode
