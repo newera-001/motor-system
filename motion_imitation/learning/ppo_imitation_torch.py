@@ -10,20 +10,20 @@ import time
 import numpy as np
 import gym
 from gym import spaces
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Dict, Optional, Type, Union, Tuple
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
-
-from stable_baselines3.common.policies import ActorCriticPolicy  # 相当于imitation_policies
+from stable_baselines3.common.policies import ActorCriticPolicy  
 from stable_baselines3.ppo import ppo
 from stable_baselines3.common.type_aliases import GymEnv, MaybeCallback, Schedule
-from stable_baselines3.common.vec_env import VecNormalize
 from stable_baselines3.common.utils import obs_as_tensor, safe_mean, explained_variance
 from stable_baselines3.common.buffers import RolloutBuffer
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
 
+from motion_imitation.Buffer import env_params_buffer
 
 
 class PPOImitation(ppo.PPO):
@@ -99,6 +99,8 @@ class PPOImitation(ppo.PPO):
                  seed: Optional[int] = None,
                  device: Union[torch.device, str] = "auto",
                  _init_setup_model: bool = True,
+                 env_randomizers=None,
+                 encoder:nn.Module = None
                  ):
         super(PPOImitation, self).__init__(policy,
                                            env,
@@ -129,15 +131,8 @@ class PPOImitation(ppo.PPO):
         if self.env is not None:
             # Check that `n_steps * n_envs > 1` to avoid NaN
             # when doing advantage normalization
+            buffer_size = self.env.num_envs * self.n_steps   # 1*2048
 
-            print('###########################')
-            print(policy_kwargs)
-            print(device)
-            print(self.env.num_envs)
-            print(self.n_steps)
-            print('###########################')
-
-            buffer_size = self.env.num_envs * self.n_steps
             assert (
                     buffer_size > 1
             ), f"`n_steps * n_envs` must be greater than 1. Currently n_steps={self.n_steps} and n_envs={self.env.num_envs}"
@@ -157,15 +152,46 @@ class PPOImitation(ppo.PPO):
         self.clip_range = clip_range
         self.clip_range_vf = clip_range_vf
         self.target_kl = target_kl
+        self.device = device
+        self._env_randomizers = env_randomizers if env_randomizers else []
+        self.params_buffer = env_params_buffer.Env_Params_Buffer(buffer_size=self.n_steps,
+                                                                 device=device,
+                                                                 params_shape=self.get_randomizer_shape(self._env_randomizers))
+
+        self.encoder = encoder.to(device)
+        self.encoder_optim = self.encoder.optimizer(learning_rate,self.encoder.parameters())
+
 
         if _init_setup_model:
             self._setup_model()
+
+        """
+        Re-construct newwork extend 8 dim for z-latent
+        160 observation， 8 z-latent
+        """
+        self.policy.mlp_extractor.value_net = nn.Sequential(
+            nn.Linear(in_features=160 + 8,out_features=512,bias=True),
+            nn.ReLU(),
+            nn.Linear(in_features=512,out_features=256,bias=True),
+            nn.ReLU()
+        )
+
+        self.policy.mlp_extractor.policy_net = nn.Sequential(
+            nn.Linear(in_features=160 + 8, out_features=512, bias=True),
+            nn.ReLU(),
+            nn.Linear(in_features=512, out_features=256, bias=True),
+            nn.ReLU()
+        )
+
+        self.policy.to(device)
+
 
     def train(self):
         """
         Update policy using the currently gathered rollout buffer.
         """
         # Switch to train mode (this affects batch norm / dropout)
+
         self.policy.set_training_mode(True)
         # Update optimizer learning rate
         self._update_learning_rate(self.policy.optimizer)
@@ -183,9 +209,11 @@ class PPOImitation(ppo.PPO):
 
         # train for n_epochs epochs
         for epoch in range(self.n_epochs):
-            approx_kl_divs = []
+            approx_kl_divs = []      # 近似kl散度
             # Do a complete pass on the rollout buffer
-            for rollout_data in self.rollout_buffer.get(self.batch_size):
+            for rollout_data, mu_param in zip(self.rollout_buffer.get(self.batch_size),
+                                              self.params_buffer.get(self.batch_size) ): 
+
                 actions = rollout_data.actions
                 if isinstance(self.action_space, spaces.Discrete):
                     # Convert discrete action from float to long
@@ -197,11 +225,20 @@ class PPOImitation(ppo.PPO):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
-                values, log_prob, entropy = self.policy.evaluate_actions(rollout_data.observations, actions)
+                latent_param = self.encoder(mu_param.float())
+                latent_param_policy = latent_param.clone()
+                obs = torch.cat([rollout_data.observations,latent_param_policy.detach()],dim=1).to(self.device)
+
+               
+                values, log_prob, entropy = self.policy.evaluate_actions(obs, actions)
+
                 values = values.flatten()
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+                # Calculate encoder loss
+                encoder_loss = -torch.mean(latent_param*advantages.reshape(-1,1).detach())
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = torch.exp(log_prob - rollout_data.old_log_prob)
@@ -226,7 +263,7 @@ class PPOImitation(ppo.PPO):
                         values - rollout_data.old_values, -clip_range_vf, clip_range_vf
                     )
                 # Value loss using the TD(gae_lambda) target
-                value_loss = F.mse_loss(rollout_data.returns, values_pred)
+                value_loss = F.mse_loss(rollout_data.returns, values_pred)                              
                 value_losses.append(value_loss.item())
 
                 # Entropy loss favor exploration
@@ -238,12 +275,14 @@ class PPOImitation(ppo.PPO):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss           
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
                 # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
+
+           
                 with torch.no_grad():
                     log_ratio = log_prob - rollout_data.old_log_prob
                     approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
@@ -255,6 +294,16 @@ class PPOImitation(ppo.PPO):
                         print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                     break
 
+                """
+                Optimize Encoder
+                """
+                self.encoder_optim.zero_grad()
+                encoder_loss.backward()
+                self.encoder_optim.step()
+
+                """
+                Optimize PPO
+                """
                 # Optimization step
                 self.policy.optimizer.zero_grad()
                 loss.backward()
@@ -276,6 +325,7 @@ class PPOImitation(ppo.PPO):
         self.logger.record("train/clip_fraction", np.mean(clip_fractions))
         self.logger.record("train/loss", loss.item())
         self.logger.record("train/explained_variance", explained_var)
+        self.logger.record("train/encoder_loss", encoder_loss.item())
         if hasattr(self.policy, "log_std"):
             self.logger.record("train/std", torch.exp(self.policy.log_std).mean().item())
 
@@ -296,10 +346,10 @@ class PPOImitation(ppo.PPO):
         eval_log_path: Optional[str] = None,
         reset_num_timesteps: bool = True,
         save_iters = 20,
-        save_path = None
+        save_path = None,
     ) -> "PPOImitation":
-        iteration = 0
 
+        iteration = 0
         total_timesteps, callback = self._setup_learn(
             total_timesteps, eval_env, callback, eval_freq, n_eval_episodes, eval_log_path, reset_num_timesteps, tb_log_name
         )
@@ -308,7 +358,9 @@ class PPOImitation(ppo.PPO):
 
         while self.num_timesteps < total_timesteps:
 
-            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer, n_rollout_steps=self.n_steps)
+            
+            continue_training = self.collect_rollouts(self.env, callback, self.rollout_buffer,
+                                                      params_buffer=self.params_buffer, n_rollout_steps=self.n_steps)
 
             if continue_training is False:
                 break
@@ -331,6 +383,7 @@ class PPOImitation(ppo.PPO):
             if total_timesteps % save_iters ==0:
                 self.save(save_path)
 
+            
             self.train()
 
         callback.on_training_end()
@@ -340,33 +393,33 @@ class PPOImitation(ppo.PPO):
 
     def collect_rollouts(
         self,
-        env: VecEnv,
+        env:VecEnv,
         callback: BaseCallback,
         rollout_buffer: RolloutBuffer,
         n_rollout_steps: int,
+        params_buffer: env_params_buffer.Env_Params_Buffer = None
     ) -> bool:
         """
-                Collect experiences using the current policy and fill a ``RolloutBuffer``.
-                The term rollout here refers to the model-free notion and should not
-                be used with the concept of rollout used in model-based RL or planning.
+            Collect experiences using the current policy and fill a ``RolloutBuffer``.
+            The term rollout here refers to the model-free notion and should not
+            be used with the concept of rollout used in model-based RL or planning.
 
-                :param env: The training environment
-                :param callback: Callback that will be called at each step
-                    (and at the beginning and end of the rollout)
-                :param rollout_buffer: Buffer to fill with rollouts
-                :param n_steps: Number of experiences to collect per environment
-                :return: True if function returned with at least `n_rollout_steps`
-                    collected, False if callback terminated rollout prematurely.
-                """
+            :param env: The training environment
+            :param callback: Callback that will be called at each step
+                (and at the beginning and end of the rollout)
+            :param rollout_buffer: Buffer to fill with rollouts
+            :param n_steps: Number of experiences to collect per environment
+            :return: True if function returned with at least `n_rollout_steps`
+                collected, False if callback terminated rollout prematurely.
+        """
         assert self._last_obs is not None, "No previous observation was provided"
-
-        env = VecNormalize(env)
 
         # Switch to eval mode (this affects batch norm / dropout)
         self.policy.set_training_mode(False)
 
         n_steps = 0
-        rollout_buffer.reset()
+        rollout_buffer.reset()    
+        params_buffer.reset()
         # Sample new weights for the state dependent exploration
         if self.use_sde:
             self.policy.reset_noise(env.num_envs)
@@ -380,9 +433,11 @@ class PPOImitation(ppo.PPO):
 
             with torch.no_grad():
                 # Convert to pytorch tensor or to TensorDict
-                # nomr_last_obs = env.normalize_obs(self._last_obs)
                 obs_tensor = obs_as_tensor(self._last_obs, self.device)
-                actions, values, log_probs = self.policy.forward(obs_tensor)
+                z_latent = self.encoder(torch.from_numpy(np.array(self._last_mu_params)).to(self.device).float())
+                obs = torch.cat([obs_tensor,z_latent], dim=1).to(self.device)
+
+                actions, values, log_probs = self.policy.forward(obs)
             actions = actions.cpu().numpy()
 
             # Rescale and perform action
@@ -392,6 +447,19 @@ class PPOImitation(ppo.PPO):
                 clipped_actions = np.clip(actions, self.action_space.low, self.action_space.high)
 
             new_obs, rewards, dones, infos = env.step(clipped_actions)
+
+            mu_param_values = []
+            for env_randomizer in self._env_randomizers:
+                mu_params = env_randomizer.get_randomization_parameters()  
+                params_values = []
+                for key in mu_params.keys():
+                    if type(mu_params[key]) == float:
+                        params_values.append(mu_params[key])
+                    else:
+                        params_values.extend(mu_params[key])
+                mu_param_values.append(params_values)
+
+            params_buffer.add(mu_param_values)
 
             self.num_timesteps += env.num_envs
 
@@ -408,15 +476,36 @@ class PPOImitation(ppo.PPO):
                 actions = actions.reshape(-1, 1)
             rollout_buffer.add(self._last_obs, actions, rewards, self._last_episode_starts, values, log_probs)
             self._last_obs = new_obs
+            self._last_mu_params = mu_param_values
+
             self._last_episode_starts = dones
 
         with torch.no_grad():
             # Compute value for the last timestep
             obs_tensor = obs_as_tensor(new_obs, self.device)
-            _, values, _ = self.policy.forward(obs_tensor)
+            z_latent = self.encoder(torch.from_numpy(np.array(mu_param_values)).to(self.device).float())
+            obs = torch.cat([obs_tensor, z_latent], dim=1).to(self.device)
+            _, values, _ = self.policy.forward(obs)
 
+        # advantage
         rollout_buffer.compute_returns_and_advantage(last_values=values, dones=dones)
 
         callback.on_rollout_end()
 
         return True
+
+    def get_randomizer_shape(self,env_randomizer):
+        params_shape = []
+        for env_randomizer in env_randomizer:
+            mu_params = env_randomizer.get_randomization_parameters()  
+            params_values = []
+            for key in mu_params.keys():
+                if type(mu_params[key]) == float:
+                    params_values.append(mu_params[key])
+                else:
+                    params_values.extend(mu_params[key])
+            params_shape.append(params_values)
+
+
+        self._last_mu_params = params_shape
+        return np.array(params_shape).size
