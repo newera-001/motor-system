@@ -1,6 +1,7 @@
 import os
 import inspect
 
+
 currentdir = os.path.dirname(os.path.abspath(inspect.getfile(inspect.currentframe())))
 parentdir = os.path.dirname(currentdir)
 os.sys.path.insert(0, parentdir)
@@ -16,7 +17,9 @@ import time
 
 from motion_imitation.envs import env_builder as env_builder
 from motion_imitation.learning import ppo_imitation_torch as ppo_imitation
+from motion_imitation.learning import encoder
 from stable_baselines3.common.policies import ActorCriticPolicy
+
 
 
 from stable_baselines3.common.callbacks import CheckpointCallback
@@ -39,7 +42,7 @@ def set_rand_seed(seed=None):
 
 
 
-def build_model(env,  output_dir):
+def build_model(env, env_randomizer, z_size, output_dir):
     policy_kwargs = {
         "net_arch": [{"pi": [512, 256],
                       "vf": [512, 256]}],
@@ -54,11 +57,14 @@ def build_model(env,  output_dir):
         gamma=0.95,
         policy_kwargs=policy_kwargs,
         tensorboard_log=output_dir,
-        verbose=1)
+        verbose=1,
+        env_randomizers=env_randomizer,
+        encoder=encoder.Encoder(28, z_size)
+    )
     return model
 
 
-def train(model, env, total_timesteps, output_dir="", int_save_freq=0):
+def train(model,  total_timesteps, output_dir="", int_save_freq=0):
     if (output_dir == ""):
         save_path = None
     else:
@@ -120,12 +126,15 @@ def main():
     arg_parser.add_argument("--output_dir", dest="output_dir", type=str, default="output")
     arg_parser.add_argument("--num_test_episodes", dest="num_test_episodes", type=int, default=None)
     arg_parser.add_argument("--model_file", dest="model_file", type=str, default="")
-    arg_parser.add_argument("--total_timesteps", dest="total_timesteps", type=int, default=2e8)
+    arg_parser.add_argument("--total_timesteps", dest="total_timesteps", type=int, default=2e7)
     arg_parser.add_argument("--int_save_freq", dest="int_save_freq", type=int,
                             default=0)  # save intermediate model every n policy steps
     arg_parser.add_argument('--num_envs',dest='num_envs',type=int,default=1)
+    arg_parser.add_argument('--z_size', dest='z_size',type=int, default=8)
 
     args = arg_parser.parse_args()
+
+    enable_env_rand = ENABLE_ENV_RANDOMIZER and (args.mode != "test")
 
     base_motion_path = 'motion_imitation/data/motions/'
     motion_list = args.motion_file.split('|')
@@ -133,15 +142,18 @@ def main():
     for motion_name in motion_list:
         motion_files.append(base_motion_path+motion_name)
 
-        
-    env = env_builder.build_imitation_env(motion_files=motion_files,
+    
+    env, randomizer = env_builder.build_imitation_env(motion_files=motion_files,
                                           num_parallel_envs=args.num_envs,
                                           mode=args.mode,
                                           enable_randomizer=enable_env_rand,
                                           enable_rendering=args.visualize)
 
+
     model = build_model(env=env,
-                        output_dir=args.output_dir)
+                        env_randomizer=randomizer,
+                        output_dir=args.output_dir,
+                        z_size=args.z_size)
 
     if args.model_file != "":
         model.set_parameters(args.model_file)
@@ -159,6 +171,9 @@ def main():
     else:
         assert False, "Unsupported mode: " + args.mode
 
+    return
+
 
 if __name__ == '__main__':
     main()
+
