@@ -16,11 +16,11 @@ class Env_Params_Buffer:
     def reset(self):
         self.full = False
         self.env_mu_params = np.zeros(shape=(self._buffer_size, self._params_size), dtype=np.float32)
-        self.rewards = np.zeros((self._buffer_size, 1), dtype=np.float32)
+#         self.rewards = np.zeros((self._buffer_size, 1), dtype=np.float32)       
 
     def add(self,mu_params, reward=0):
         self.env_mu_params[self.pos] = np.array(mu_params,dtype=np.float64).copy()
-        self.rewards[self.pos] = np.array(reward).copy()
+#         self.rewards[self.pos] = np.array(reward).copy()
         self.pos += 1
 
         if self.pos == self._buffer_size:
