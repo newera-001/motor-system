@@ -28,4 +28,4 @@ python motion_imitation/run_torch.py --mode test --motion_file 'dog_pace.txt' --
 * model_path: There's a model parameters zip file, you just find out and copy it's path.
 
 ## Extra work
-In this project, I donot use Gaussian distribution to fitting the encoder rather by using a mlp network with one hidden layer. The loss function is z*advantages. And now I am testing the performance.
+In this project, I donot use Gaussian distribution to fitting the encoder rather by using a mlp network with one hidden layer. The loss function is z(output of net)*advantages. And now I am testing the performance.
