@@ -20,6 +20,7 @@ python motion_imitation/run_torch.py --mode train --motion_file 'dog_pace.txt|do
 * motion_file: Chose which motion to imitate (ps: | is used to split different motion)
 * visualize: Whether rendering or not when training
 * num_envs: Number of environments calculated in parallel
+* type_name: Name of model file
 
 For testing:
 ```
