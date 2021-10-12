@@ -6,9 +6,13 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
 
         self.fc = nn.Sequential(
-            nn.Linear(params_size,128),
+            nn.Linear(params_size, 512),
             nn.ReLU(),
-            nn.Linear(128,z_size)
+            nn.Linear(512,256),
+            nn.ReLU(),
+            nn.Linear(256,128),
+            nn.ReLU(),
+            nn.Linear(128, z_size),
         )
 
     def forward(self,params):
