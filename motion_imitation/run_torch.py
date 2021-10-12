@@ -54,7 +54,8 @@ def build_model(env, env_randomizer, z_size, is_load, output_dir, type_name='dog
         tensorboard_log=output_dir,
         verbose=1,
         env_randomizers=env_randomizer,
-        encoder=encoder.Encoder(28, z_size),        # 里面并没有保存encoder模型
+        # input_size is 107 
+        encoder=encoder.Encoder(107, z_size),        # 里面并没有保存encoder模型
         type_name = type_name,
         z_size = z_size,
         is_load= is_load
@@ -86,7 +87,7 @@ def train(model,  total_timesteps, output_dir="",type_name='dog_pace', int_save_
 
 def test(model, encoder_model:torch.nn.Module, env, num_procs, num_episodes=None):
 
-    encoder = torch.load(encoder_model).to('cuda')
+    encoder = torch.load(encoder_model).to('cpu')
     encoder.eval()
 
     curr_return = 0
@@ -99,28 +100,21 @@ def test(model, encoder_model:torch.nn.Module, env, num_procs, num_episodes=None
         num_local_episodes = np.inf
 
     obs = env.reset()
-    # 获取环境参数
-    env_randomizers = model._env_randomizers
-    params = model._last_mu_params
+    params = env.get_env_parameters()
 
+    # # 获取环境参数
+    # env_randomizers = model._env_randomizers
+    # params = model._last_mu_params
     while episode_count < num_local_episodes:
+
         # 注意obs应该包含环境参数的z-latent
         z_latent = encoder(torch.tensor(params).float())
         obs = torch.cat([obs,z_latent], dim=1)
-
         act, _ = model.predict(obs, deterministic=True)
         new_obs, r, done, info = env.step(act)
 
-        params = []
-        for env_randomizer in env_randomizers:
-            mu_params = env_randomizer.get_randomization_parameters()  # 获取µ ∼p(µ) 如果源码中真没做这一工作
-            params_values = []
-            for key in mu_params.keys():
-                if type(mu_params[key]) == float:
-                    params_values.append(mu_params[key])
-                else:
-                    params_values.extend(mu_params[key])
-            params.append(params_values)
+        params = env.get_env_parameters()
+
         curr_return += r
 
         if done:
@@ -128,8 +122,8 @@ def test(model, encoder_model:torch.nn.Module, env, num_procs, num_episodes=None
             sum_return += curr_return
             episode_count += 1
         obs = new_obs
-    sum_return = MPI.COMM_WORLD.allreduce(sum_return, MPI.SUM)
-    episode_count = MPI.COMM_WORLD.allreduce(episode_count, MPI.SUM)
+    # sum_return = MPI.COMM_WORLD.allreduce(sum_return, MPI.SUM)
+    # episode_count = MPI.COMM_WORLD.allreduce(episode_count, MPI.SUM)
 
     mean_return = sum_return / episode_count
 
