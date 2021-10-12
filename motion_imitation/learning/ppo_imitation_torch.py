@@ -163,7 +163,6 @@ class PPOImitation(ppo.PPO):
                                                                  params_shape=self.get_randomizer_shape(self._env_randomizers))
 
         self.encoder = encoder.to(device)
-        self.encoder_optim = self.encoder.optimizer(learning_rate, self.encoder.parameters())
         self.save_and_load = checksaveload.CheckSaveLoad(type_name=type_name, is_load=is_load)
 
         if _init_setup_model:
@@ -188,8 +187,11 @@ class PPOImitation(ppo.PPO):
         )
 
         self.policy.to(device)
-
-
+        
+        self.encoder_optim = self.encoder.optimizer(lr=learning_rate, parameters=[{'params':self.encoder.parameters(),'lr': 1e-4},
+                                                                                  {'params':self.policy.parameters()}
+                                                                                 ])
+    
     # 构建训练过程
     def train(self):
         """
@@ -230,21 +232,20 @@ class PPOImitation(ppo.PPO):
                 if self.use_sde:
                     self.policy.reset_noise(self.batch_size)
 
+                # 10/4 minmax
+                mu_param = (mu_param - mu_param.min()) / (mu_param.max() - mu_param.min())
                 latent_param = self.encoder(mu_param.float())
-                latent_param_policy = latent_param.clone()
-                obs = torch.cat([rollout_data.observations, latent_param_policy.detach()],dim=1).to(self.device)
 
-                # 价值网络 判断动作的好坏
-                values, log_prob, entropy = self.policy.evaluate_actions(obs, actions)
-
-                values = values.flatten()
                 # Normalize advantage
                 advantages = rollout_data.advantages
                 advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
-                # Calculate encoder loss
-                # 提升其概率
-                encoder_loss = -torch.mean(F.softmax(latent_param,dim=1) * advantages.reshape(-1,1).detach())
+                # latent_param_policy = latent_param.clone()
+                obs = torch.cat([rollout_data.observations, latent_param],dim=1).to(self.device)
+
+                # 价值网络 判断动作的好坏
+                values, log_prob, entropy = self.policy.evaluate_actions(obs, actions)
+                values = values.flatten()
 
                 # ratio between old and new policy, should be one at the first iteration
                 ratio = torch.exp(log_prob - rollout_data.old_log_prob)
@@ -281,14 +282,15 @@ class PPOImitation(ppo.PPO):
 
                 entropy_losses.append(entropy_loss.item())
 
-                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss           # 用来更新策略网络
+                encoder_loss = -torch.mean(F.softmax(latent_param, dim=0) * advantages.reshape(-1, 1))
+                loss = policy_loss + self.ent_coef * entropy_loss + self.vf_coef * value_loss + encoder_loss
 
                 # Calculate approximate form of reverse KL Divergence for early stopping
                 # see issue #417: https://github.com/DLR-RM/stable-baselines3/issues/417
                 # and discussion in PR #419: https://github.com/DLR-RM/stable-baselines3/pull/419
                 # and Schulman blog: http://joschu.net/blog/kl-approx.html
 
-                # 计算kl散度（正则项，但loss里并为用kl散度来做正则）和 重要性采样比  这里并没有用kl散度做正则项
+
                 with torch.no_grad():
                     log_ratio = log_prob - rollout_data.old_log_prob
                     approx_kl_div = torch.mean((torch.exp(log_ratio) - 1) - log_ratio).cpu().numpy()
@@ -300,22 +302,12 @@ class PPOImitation(ppo.PPO):
                         print(f"Early stopping at step {epoch} due to reaching max kl: {approx_kl_div:.2f}")
                     break
 
-                """
-                Optimize Encoder
-                """
+                    
                 self.encoder_optim.zero_grad()
-                encoder_loss.backward()
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
                 self.encoder_optim.step()
 
-                """
-                Optimize PPO
-                """
-                # Optimization step
-                self.policy.optimizer.zero_grad()
-                loss.backward()
-                # Clip grad norm
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.max_grad_norm)
-                self.policy.optimizer.step()
 
             if not continue_training:
                 break
@@ -496,7 +488,7 @@ class PPOImitation(ppo.PPO):
             # 获取环境参数
             mu_param_values = []
             for env_randomizer in self._env_randomizers:
-                mu_params = env_randomizer.get_randomization_parameters()  # 获取µ ∼p(µ) 如果源码中真没做这一工作
+                mu_params = env_randomizer.get_environment_parameters()  # 获取µ ∼p(µ) 如果源码中真没做这一工作
                 params_values = []
                 for key in mu_params.keys():
                     if type(mu_params[key]) == float:
@@ -540,10 +532,10 @@ class PPOImitation(ppo.PPO):
 
         return True
 
-    def get_randomizer_shape(self, env_randomizer):
+        def get_randomizer_shape(self, env_randomizer):
         params_shape = []
         for env_randomizer in env_randomizer:
-            mu_params = env_randomizer.get_randomization_parameters()  # 获取µ ∼p(µ) 如果源码中真没做这一工作
+            mu_params = env_randomizer.get_environment_parameters()  # 获取µ ∼p(µ) 如果源码中真没做这一工作
             params_values = []
             for key in mu_params.keys():
                 if type(mu_params[key]) == float:
