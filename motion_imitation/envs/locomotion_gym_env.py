@@ -173,7 +173,13 @@ class LocomotionGymEnv(gym.Env):
     def seed(self, seed=None):
         self.np_random, self.np_random_seed = seeding.np_random(seed)
         return [self.np_random_seed]
+    
+    def get_env_parameters(self):
+        """Returns all environment parameters"""
+        mu_params = self._robot.GetEnvironmentParameters()
 
+        return mu_params
+    
     def all_sensors(self):
         """Returns all robot and environmental sensors."""
         return self._robot.GetAllSensors() + self._sensors
