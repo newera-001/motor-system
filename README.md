@@ -30,4 +30,4 @@ python motion_imitation/run_torch.py --mode test --motion_file 'dog_pace.txt' --
 * model_path: There's a model parameters zip file, you just find out and copy it's path.
 
 ## Extra work
-In this project, I donot use Gaussian distribution to fitting the encoder rather by using a mlp network with one hidden layer. The loss function is softmax(z)*advantages. And now I am testing the performance.
+In this project, I donot use Gaussian distribution to fitting the encoder rather by using a mlp network with one hidden layer. The encoder loss function is softmax(z, dim=0)*advantages. Final loss function is policy + encoder with optimized by Adam synchronously.  And now I am testing the performance.
