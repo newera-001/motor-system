@@ -13,7 +13,7 @@ Project Link:https://xbpeng.github.io/projects/Robotic_Imitation/index.html
 ## Tutorials
 For training：
 ```
-python motion_imitation/run_torch.py --mode train --motion_file 'dog_pace.txt|dog_spin.txt' /
+python motion_imitation/run_torch.py --mode train --motion_file 'dog_pace.txt|dog_spin.txt' \
 --int_save_freq 10000000 --visualize --num_envs 50 --type_name 'dog_pace'
 ```
 * mode: train or test
