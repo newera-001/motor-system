@@ -87,8 +87,7 @@ def train(model,  total_timesteps, output_dir="",type_name='dog_pace', int_save_
 
 def test(model, encoder_model:torch.nn.Module, env, num_procs, num_episodes=None):
 
-    encoder = torch.load(encoder_model).to('cpu')
-    encoder.eval()
+    encoder = torch.load(encoder_model).to('cuda')
 
     curr_return = 0
     sum_return = 0
@@ -99,29 +98,38 @@ def test(model, encoder_model:torch.nn.Module, env, num_procs, num_episodes=None
     else:
         num_local_episodes = np.inf
 
-    obs = env.reset()
+    obs = torch.tensor(env.reset()).to('cuda')
     params = env.get_env_parameters()
 
-    # # 获取环境参数
-    # env_randomizers = model._env_randomizers
-    # params = model._last_mu_params
+    params_values = []
+    for key in params.keys():
+        if type(params[key]) == float:
+            params_values.append(params[key])
+        else:
+            params_values.extend(params[key])
+
     while episode_count < num_local_episodes:
 
-        # 注意obs应该包含环境参数的z-latent
-        z_latent = encoder(torch.tensor(params).float())
-        obs = torch.cat([obs,z_latent], dim=1)
-        act, _ = model.predict(obs, deterministic=True)
+        z_latent = encoder(torch.tensor(params_values).float().to('cuda'))
+        obs = torch.cat([obs,z_latent], dim=0)
+        act, _ = model.predict(obs.detach().unsqueeze(dim=0), deterministic=True)
         new_obs, r, done, info = env.step(act)
 
         params = env.get_env_parameters()
+        params_values = []
+        for key in params.keys():
+            if type(params[key]) == float:
+                params_values.append(params[key])
+            else:
+                params_values.extend(params[key])
 
         curr_return += r
 
         if done:
-            obs = env.reset()
+            obs = torch.tensor(env.reset()).to('cuda')
             sum_return += curr_return
             episode_count += 1
-        obs = new_obs
+        obs = torch.tensor(new_obs).to('cuda')
     # sum_return = MPI.COMM_WORLD.allreduce(sum_return, MPI.SUM)
     # episode_count = MPI.COMM_WORLD.allreduce(episode_count, MPI.SUM)
 
