@@ -10,7 +10,7 @@ import time
 import numpy as np
 import gym
 from gym import spaces
-from typing import Any, Dict, Optional, Type, Union
+from typing import Any, Dict, Optional, Type, Union, Tuple
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -423,7 +423,50 @@ class PPOImitation(ppo.PPO):
         callback.on_training_end()
 
         return self
+    
+    
+        def predict(
+        self,
+        observation: Union[np.ndarray, Dict[str, np.ndarray]],
+        state: Optional[np.ndarray] = None,
+        mask: Optional[np.ndarray] = None,
+        deterministic: bool = False,
+    ) -> Tuple[np.ndarray, Optional[np.ndarray]]:
+        """
+        Get the policy action and state from an observation (and optional state).
+        Includes sugar-coating to handle different observations (e.g. normalizing images).
 
+        :param observation: the input observation
+        :param state: The last states (can be None, used in recurrent policies)
+        :param mask: The last masks (can be None, used in recurrent policies)
+        :param deterministic: Whether or not to return deterministic actions.
+        :return: the model's action and the next state
+            (used in recurrent policies)
+        """
+        # TODO (GH/1): add support for RNN policies
+        # if state is None:
+        #     state = self.initial_state
+        # if mask is None:
+        #     mask = [False for _ in range(self.n_envs)]
+        # Switch to eval mode (this affects batch norm / dropout)
+        self.policy.set_training_mode(False)
+
+        with torch.no_grad():
+            actions = self.policy._predict(observation, deterministic=deterministic)
+        # Convert to numpy
+        actions = actions.cpu().numpy()
+
+        if isinstance(self.action_space, gym.spaces.Box):
+            if self.policy.squash_output:
+                # Rescale to proper domain when using squashing
+                actions = self.policy.unscale_action(actions)
+            else:
+                # Actions could be on arbitrary scale, so clip the actions to avoid
+                # out of bound error (e.g. if sampling from a Gaussian distribution)
+                actions = np.clip(actions, self.action_space.low, self.action_space.high)
+
+        return actions[0], state
+    
 
     def collect_rollouts(
         self,
