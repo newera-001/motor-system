@@ -24,10 +24,11 @@ python motion_imitation/run_torch.py --mode train --motion_file 'dog_pace.txt|do
 
 For testing:
 ```
-python motion_imitation/run_torch.py --mode test --motion_file 'dog_pace.txt' --model_file 'model_file_path' --visualize
+python motion_imitation/run_torch.py --mode test --motion_file 'dog_pace.txt' --model_file 'file_path' \ 
+--encoder_file 'file_path' --visualize
 ```
 
-* model_path: There's a model parameters zip file, you just find out and copy it's path.
+* file_path: There's a model parameters zip file, you just find out and copy it's path.
 
 ## Extra work
 ### Adaptation
