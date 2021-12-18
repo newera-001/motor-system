@@ -34,4 +34,12 @@ python motion_imitation/run_torch.py --mode test --motion_file 'dog_pace.txt' --
 ### Adaptation
 In this project, I donot use Gaussian distribution to fitting the encoder rather by using a mlp network with one hidden layer. The encoder loss function is -torch.sum(F.softmax(latent_param, dim=0) * advantages.reshape(-1, 1), dim=1).max(). Final loss function is policy + γ * encoder with optimized by Adam synchronously. Because there's no real robot, I do not transfer it to real world for testing.
 ### Multi-motion skills learning
-pass
+For multi-motion skills learning, I do the one-hot encode for each motion as the input of policy network. Meanwhile I use a classifier mlp network to classifiy the motion responding to the output of policy net. And the classifier loss function is cross entropy —— cross_entropy(pre_motion_id, motion_id). 
+
+The whole loss function is : alpha * cross_entropy(pre_motion_id, motion_id) + (1 - alpha) * regul_term
+
+     *Part Ⅰ is used to conform that agent can learn current motion
+     *Part Ⅱ is used to conform that agent can act previous motion which had learned 
+     
+And for more details about regul term, please check the original paper.
+
