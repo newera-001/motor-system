@@ -12,7 +12,6 @@ parentdir = os.path.dirname(os.path.dirname(currentdir))
 os.sys.path.insert(0, parentdir)
 
 import logging
-import os
 import numpy as np
 
 from motion_imitation.envs.env_wrappers import imitation_terminal_conditions
@@ -91,7 +90,7 @@ class ImitationTask(object):
             calculating root position and rotation reward.
           root_velocity_err_scale: Root linear and angular velocity error scale for
             calculating root linear and angular velocity reward.
-          perturb_init_state_prob: Probability of applying random pertubations to
+          perturb_init_state_prob: Probability of applying random perturbations to
             the initial state.
           tar_obs_noise: List of the standard deviations of the noise to be applied
             to the target observations [base rotation std, base position std].
@@ -118,7 +117,7 @@ class ImitationTask(object):
 
         self._clip_time_min = clip_time_min
         self._clip_time_max = clip_time_max
-        self._clip_change_time = clip_time_min
+        self._clip_change_time = clip_time_min                        # 被模仿机器狗执行某动作的最长时间 超过则切换为其他动作
 
         self._enable_cycle_sync = enable_cycle_sync
         self._active_motion_id = -1
@@ -127,7 +126,7 @@ class ImitationTask(object):
         self._ref_model = None
         self._ref_pose = None
         self._ref_vel = None
-        self._default_pose = None
+        self._default_pose = None                                     # 没看到有在其他文件中被使用
         self._perturb_init_state_prob = perturb_init_state_prob
         self._tar_obs_noise = tar_obs_noise
         self._draw_ref_model_alpha = draw_ref_model_alpha
@@ -150,10 +149,12 @@ class ImitationTask(object):
         self._root_pose_err_scale = root_pose_err_scale
         self._root_velocity_err_scale = root_velocity_err_scale
 
-        return
 
     def __call__(self, env):
         return self.reward(env)
+
+    def get_active_motion_id(self):
+        return self._active_motion_id
 
     def reset(self, env):
         """Resets the internal state of the task."""
@@ -161,17 +162,21 @@ class ImitationTask(object):
         self._last_base_position = self._get_sim_base_position()
         self._episode_start_time_offset = 0.0
 
+        # 获取要模仿的动作（随机获取）
         if (self._ref_motions is None or self._env.hard_reset):
             self._ref_motions = self._load_ref_motions(self._ref_motion_filenames)
             self._active_motion_id = self._sample_ref_motion()
 
+        # 获取执行模仿动作的机器狗模型
         if (self._ref_model is None or self._env.hard_reset):
             self._ref_model = self._build_ref_model()
             self._build_joint_data()
 
+        # 获取机器狗的默认姿态（初始姿态？）
         if self._default_pose is None or self._env.hard_reset:
-            self._default_pose = self._record_default_pose()
+            self._default_pose = self._record_default_pose(self)
 
+        # 以概率rand_val 去初始化执行模仿动作机器狗的状态
         rand_val = self._rand_uniform(0.0, 1.0)
         ref_state_init = rand_val < self._ref_state_init_prob
 
@@ -179,8 +184,10 @@ class ImitationTask(object):
         if not ref_state_init and self._enable_warmup():
             self._curr_episode_warmup = True
 
+        # 将模仿动作重新调整
         self._reset_ref_motion()
 
+        # 是否对机器狗状态添加干扰
         perturb_state = False
         if self._enable_perturb_init_state():
             rand_val = self._rand_uniform(0.0, 1.0)
@@ -193,8 +200,12 @@ class ImitationTask(object):
     def update(self, env):
         """Updates the internal state of the task."""
         del env
-
+        # 更新参考动作
+        """
+        这个应该获取动作id 这样好针对特定动作 获取它对应的奖励，分开计算动作的汇报。
+        """
         self._update_ref_motion()
+        # 获取机器狗当前的position
         self._last_base_position = self._get_sim_base_position()
 
         return
@@ -206,6 +217,9 @@ class ImitationTask(object):
 
         return done
 
+    """
+    获取需要模仿学习的动作的数量
+    """
     def get_num_motions(self):
         """Get the number of reference motions to be imitated.
         Returns:
@@ -229,9 +243,9 @@ class ImitationTask(object):
         Returns:
           Boolean indicating if the motion is over.
         """
-        time = self._get_motion_time()
-        motion = self.get_active_motion()
-        is_over = motion.is_over(time)
+        time = self._get_motion_time()        # 获取正在执行动作的时间
+        motion = self.get_active_motion()     # 获取正在执行的动作的ID
+        is_over = motion.is_over(time)        # 做判断
         return is_over
 
     def get_active_motion(self):
@@ -241,32 +255,42 @@ class ImitationTask(object):
         """
         return self._ref_motions[self._active_motion_id]
 
+    """
+        作为goal 动作输入到policy去
+    """
     def build_target_obs(self):
         """Constructs the target observations, consisting of a sequence of
-        target frames for future timesteps. The tartet poses to include is
+        target frames for future timesteps. The target poses to include is
         specified by self._tar_frame_steps.
+
+        这是论文里(V. MOTION IMITATION)的goal 模仿动作在当前timestep下
+        未来(q_hat:t+1, q_hat:t+1, q_hat:t+10, q_hat:t+30) 的observation
+
         Returns:
           An array containing the target frames.
         """
         tar_poses = []
 
         time0 = self._get_motion_time()
-        dt = self._env.env_time_step
-        motion = self.get_active_motion()
+        dt = self._env.env_time_step                              # 执行动作的次数*timestep
+        motion = self.get_active_motion()                         # 获取正在被模仿的动作
 
-        robot = self._env.robot
+        robot = self._env.robot                                   # 获取机器狗类
         ref_base_pos = self._get_ref_base_position()
         sim_base_rot = np.array(robot.GetBaseOrientation())
 
-        heading = motion_util.calc_heading(sim_base_rot)
+        heading = motion_util.calc_heading(sim_base_rot)          # 获取航向角
         if self._tar_obs_noise is not None:
             heading += self._randn(0, self._tar_obs_noise[0])
         inv_heading_rot = transformations.quaternion_about_axis(-heading, [0, 0, 1])
 
         for step in self._tar_frame_steps:
-            tar_time = time0 + step * dt
-            tar_pose = self._calc_ref_pose(tar_time)
+            tar_time = time0 + step * dt # 当前动作的时间 + 未来第t+n步*每一环境步所需时间
 
+            tar_pose = self._calc_ref_pose(tar_time) # 通过对应的时间获取对应的动作
+
+            # 作用未知
+            #############################################################################
             tar_root_pos = motion.get_frame_root_pos(tar_pose)
             tar_root_rot = motion.get_frame_root_rot(tar_pose)
 
@@ -279,6 +303,7 @@ class ImitationTask(object):
 
             motion.set_frame_root_pos(tar_root_pos, tar_pose)
             motion.set_frame_root_rot(tar_root_rot, tar_pose)
+            #############################################################################
 
             tar_poses.append(tar_pose)
 
@@ -323,6 +348,7 @@ class ImitationTask(object):
         self._ref_state_init_prob = prob
         return
 
+    # 这是论文 V. MOTION IMITATION:Reward Function 部分定义的奖励
     def reward(self, env):
         """Get the reward without side effects."""
         del env
@@ -353,6 +379,10 @@ class ImitationTask(object):
         num_joints = self._get_num_joints()
 
         for j in range(num_joints):
+            # getJointStateMultiDof(ref_model, j)[0]
+            # The position value of this joint
+            # (as joint angle/position or joint orientation quaternion)
+            # list of 1 or 4
             j_state_ref = pyb.getJointStateMultiDof(ref_model, j)
             j_state_sim = pyb.getJointStateMultiDof(sim_model, j)
             j_pose_ref = np.array(j_state_ref[0])
@@ -367,7 +397,7 @@ class ImitationTask(object):
                 j_pose_err = j_pose_diff.dot(j_pose_diff)
                 pose_err += j_pose_err
 
-        pose_reward = np.exp(-self._pose_err_scale * pose_err)
+        pose_reward = np.exp(-self._pose_err_scale * pose_err)  # (0,1]
 
         return pose_reward
 
@@ -402,21 +432,22 @@ class ImitationTask(object):
         return vel_reward
 
     def _calc_reward_end_effector(self):
-        """Get the end effector reward."""
+        """Get the end effector(末端执行器) reward."""
         env = self._env
         robot = env.robot
         sim_model = robot.quadruped
         ref_model = self._ref_model
         pyb = self._get_pybullet_client()
 
-        root_pos_ref = self._get_ref_base_position()
-        root_rot_ref = self._get_ref_base_rotation()
+        # 获取的这个position是机器狗身体的基于广义笛卡尔坐标系下的三维坐标
+        root_pos_ref = self._get_ref_base_position()       # [x, y, z]
+        root_rot_ref = self._get_ref_base_rotation()       # [x, y, z, w]
         root_pos_sim = self._get_sim_base_position()
         root_rot_sim = self._get_sim_base_rotation()
 
-        heading_rot_ref = self._calc_heading_rot(root_rot_ref)
+        heading_rot_ref = self._calc_heading_rot(root_rot_ref)                        # 计算航向角
         heading_rot_sim = self._calc_heading_rot(root_rot_sim)
-        inv_heading_rot_ref = transformations.quaternion_conjugate(heading_rot_ref)
+        inv_heading_rot_ref = transformations.quaternion_conjugate(heading_rot_ref)   # 获取反向航向角（其共轭复数）
         inv_heading_rot_sim = transformations.quaternion_conjugate(heading_rot_sim)
 
         end_eff_err = 0.0
@@ -426,12 +457,21 @@ class ImitationTask(object):
         for j in range(num_joints):
             is_end_eff = (j in robot._foot_link_ids)
             if (is_end_eff):
+
+                # getLinkState():
+                # You can also query the Cartesian world position and orientation
+                # for the center of mass of each link using getLinkState
+                # return:
+                # 0:linkWorldPosition(Cartesian position of center of mass)
                 end_state_ref = pyb.getLinkState(ref_model, j)
                 end_state_sim = pyb.getLinkState(sim_model, j)
                 end_pos_ref = np.array(end_state_ref[0])
                 end_pos_sim = np.array(end_state_sim[0])
 
                 rel_end_pos_ref = end_pos_ref - root_pos_ref
+                """
+                将link质心的的坐标做转换旨在将机器狗的运动学状态转为被模仿狗的运动学状态  ？
+                """
                 rel_end_pos_ref = pose3d.QuaternionRotatePoint(rel_end_pos_ref,
                                                                inv_heading_rot_ref)
 
@@ -439,8 +479,9 @@ class ImitationTask(object):
                 rel_end_pos_sim = pose3d.QuaternionRotatePoint(rel_end_pos_sim,
                                                                inv_heading_rot_sim)
 
-                rel_end_pos_diff = rel_end_pos_ref - rel_end_pos_sim
-                end_pos_diff_height = end_pos_ref[2] - end_pos_sim[2]
+                # 这是转换运动学状态后key points 的误差
+                rel_end_pos_diff = rel_end_pos_ref - rel_end_pos_sim       # 取前两个值（关键点的）
+                end_pos_diff_height = end_pos_ref[2] - end_pos_sim[2]      # 最后一个 取link mass pisition[2]
 
                 end_pos_err = (
                         rel_end_pos_diff[0] * rel_end_pos_diff[0] +
@@ -453,16 +494,22 @@ class ImitationTask(object):
 
         return end_effector_reward
 
+    """
+    body 上的
+    """
     def _calc_reward_root_pose(self):
         """Get the root pose reward."""
-        root_pos_ref = self._get_ref_base_position()
-        root_rot_ref = self._get_ref_base_rotation()
+
+        root_pos_ref = self._get_ref_base_position()          # position
+        root_rot_ref = self._get_ref_base_rotation()          # rotation
         root_pos_sim = self._get_sim_base_position()
         root_rot_sim = self._get_sim_base_rotation()
 
+        # position err
         root_pos_diff = root_pos_ref - root_pos_sim
         root_pos_err = root_pos_diff.dot(root_pos_diff)
 
+        # rotation
         root_rot_diff = transformations.quaternion_multiply(
             root_rot_ref, transformations.quaternion_conjugate(root_rot_sim))
         _, root_rot_diff_angle = pose3d.QuaternionToAxisAngle(root_rot_diff)
@@ -483,6 +530,13 @@ class ImitationTask(object):
         ref_model = self._ref_model
         pyb = self._get_pybullet_client()
 
+        """
+        getBaseVelocity:
+            You get access to the linear and angular velocity of the base of a body 
+        return:
+            This returns a list of two vector3 values (3 floats in a list) representing 
+            the linear velocity [x,y,z] and angular velocity [wx,wy,wz] in Cartesian worldspace coordinates.
+        """
         root_vel_ref, root_ang_vel_ref = pyb.getBaseVelocity(ref_model)
         root_vel_sim, root_ang_vel_sim = pyb.getBaseVelocity(sim_model)
         root_vel_ref = np.array(root_vel_ref)
@@ -490,9 +544,10 @@ class ImitationTask(object):
         root_vel_sim = np.array(root_vel_sim)
         root_ang_vel_sim = np.array(root_ang_vel_sim)
 
+        # 线速度 err
         root_vel_diff = root_vel_ref - root_vel_sim
         root_vel_err = root_vel_diff.dot(root_vel_diff)
-
+        # 角速度 err
         root_ang_vel_diff = root_ang_vel_ref - root_ang_vel_sim
         root_ang_vel_err = root_ang_vel_diff.dot(root_ang_vel_diff)
 
@@ -502,6 +557,9 @@ class ImitationTask(object):
 
         return root_velocity_reward
 
+    """
+    加载要模仿的动作数据
+    """
     def _load_ref_motions(self, filenames):
         """Load reference motions.
         Args:
@@ -509,15 +567,18 @@ class ImitationTask(object):
           filenames: Names of files in dir to be loaded.
         Returns: List of reference motions loaded from the files.
         """
+
+        # 从这里看 好像一次性 可以加载多个 ref motion， 但是训练代码只放了一个，
+        # 直接输入动作文件如何用 | 隔开即可
         num_files = len(filenames)
         if num_files == 0:
             raise ValueError("No reference motions specified.")
 
         total_time = 0.0
         motions = []
+
         for filename in filenames:
             curr_motion = motion_data.MotionData(filename)
-
             curr_duration = curr_motion.get_duration()
             total_time += curr_duration
             motions.append(curr_motion)
@@ -532,7 +593,7 @@ class ImitationTask(object):
         Returns:
           Handle to the simulated model for the reference motion.
         """
-        ref_col = [1, 1, 1, self._draw_ref_model_alpha]
+        ref_col = [1, 1, 1, self._draw_ref_model_alpha]           # 这是让做ref motion动作的机器狗相对于学习的机器狗看起来更淡
 
         pyb = self._get_pybullet_client()
         urdf_file = self._env.robot.GetURDFFile()
@@ -550,7 +611,7 @@ class ImitationTask(object):
                             pyb.ACTIVATION_STATE_ENABLE_SLEEPING +
                             pyb.ACTIVATION_STATE_DISABLE_WAKEUP)
 
-        pyb.changeVisualShape(ref_model, -1, rgbaColor=ref_col)
+        pyb.changeVisualShape(ref_model, -1, rgbaColor=ref_col)   # 这是让做ref motion动作的机器狗相对于学习的机器狗看起来更淡
 
         num_joints = pyb.getNumJoints(ref_model)
         num_joints_sim = pyb.getNumJoints(self._env.robot.quadruped)
@@ -558,6 +619,7 @@ class ImitationTask(object):
                 num_joints == num_joints_sim
         ), "ref model must have the same number of joints as the simulated model."
 
+        # 设置关节信息
         for j in range(num_joints):
             pyb.setCollisionFilterGroupMask(
                 ref_model, j, collisionFilterGroup=0, collisionFilterMask=0)
@@ -575,21 +637,35 @@ class ImitationTask(object):
 
     def _build_joint_data(self):
         """Precomputes joint data to facilitating accessing data from motion frames."""
+        """
+        关节数据是什么？   关节的质心 上面的摩檫力 下面红字有说明
+        """
         num_joints = self._get_num_joints()
         self._joint_pose_idx = np.zeros(num_joints, dtype=np.int32)
         self._joint_pose_size = np.zeros(num_joints, dtype=np.int32)
         self._joint_vel_idx = np.zeros(num_joints, dtype=np.int32)
         self._joint_vel_size = np.zeros(num_joints, dtype=np.int32)
 
+        # 循环遍历每个关节
         for j in range(num_joints):
             pyb = self._get_pybullet_client()
+            # getJointInfo()
+            # For each joint we can query some information, such as its name and type.
+            # 还有jointDamping、jointFriction和jointMaxForce等
+            # 更多的是其的物理参数信息
             j_info = pyb.getJointInfo(self._ref_model, j)
+            # getJointStateMultiDof getJointStatesMultiDof allows to query multiple joint states,
+            # including multiDof(多自由度) (spherical) joints.
+            # 返回：jointPosition jointVelocity jointReactionForces appliedJointMotorTorque
+            # 运动状态
             j_state = pyb.getJointStateMultiDof(self._ref_model, j)
 
-            j_pose_idx = j_info[3]
-            j_vel_idx = j_info[4]
-            j_pose_size = len(j_state[0])
-            j_vel_size = len(j_state[1])
+            j_pose_idx = j_info[3]            # qIndex ：此实体的位置状态变量中的第一个位置索引
+            j_vel_idx = j_info[4]             # nIndex
+            j_pose_size = len(j_state[0])     # The position value of this joint
+                                              # (as jonit angle/position or joint orientation quaternion)
+                                              # list of 1 or 4
+            j_vel_size = len(j_state[1])      # list of 1 or 3
 
             if (j_pose_idx < 0):
                 assert (j_vel_idx < 0)
@@ -604,11 +680,13 @@ class ImitationTask(object):
                                                                                      1]
                     j_vel_idx = self._joint_vel_idx[j - 1] + self._joint_vel_size[j - 1]
 
-            self._joint_pose_idx[j] = j_pose_idx
-            self._joint_pose_size[j] = j_pose_size
+            self._joint_pose_idx[j] = j_pose_idx    # 这个idx的数值可能会和上一个的pose_idx and pose_size 有关
+            self._joint_pose_size[j] = j_pose_size  # 完全由该关节的pose的size决定
             self._joint_vel_idx[j] = j_vel_idx
             self._joint_vel_size[j] = j_vel_size
 
+        # 作用未知
+        #################################################################################
         motion = self.get_active_motion()
         motion_frame_size = motion.get_frame_size()
         motion_frame_vel_size = motion.get_frame_vel_size()
@@ -616,8 +694,8 @@ class ImitationTask(object):
         vel_size = self.get_vel_size()
         assert (motion_frame_size == pose_size)
         assert (motion_frame_vel_size == vel_size)
+        #################################################################################
 
-        return
 
     def _reset_ref_motion(self):
         """Reset reference motion.
@@ -629,14 +707,14 @@ class ImitationTask(object):
         self._origin_offset_rot = np.array([0, 0, 0, 1])
         self._origin_offset_pos.fill(0.0)
 
-        self._reset_motion_time_offset()
-        motion = self.get_active_motion()
-        time = self._get_motion_time()
+        self._reset_motion_time_offset()                # offset time 的作用是什么？
+        motion = self.get_active_motion()               # 获取正在执行的动作
+        time = self._get_motion_time()                  # 获取当前执行动作对应的时间
 
-        ref_pose = self._calc_ref_pose(time)
-        ref_root_pos = motion.get_frame_root_pos(ref_pose)
+        ref_pose = self._calc_ref_pose(time)            # 通过当前的时间方向算出次数ref robot的pose
+        ref_root_pos = motion.get_frame_root_pos(ref_pose)   # 再通过pose 计算出对应的body position and rotation
         ref_root_rot = motion.get_frame_root_rot(ref_pose)
-        sim_root_pos = self._get_sim_base_position()
+        sim_root_pos = self._get_sim_base_position()         # 获取我们要训练的机器人此时的body position and rotation
         sim_root_rot = self._get_sim_base_rotation()
 
         # move the root to the same position and rotation as simulated robot
@@ -649,14 +727,17 @@ class ImitationTask(object):
         self._origin_offset_rot = transformations.quaternion_about_axis(
             delta_heading, [0, 0, 1])
 
+        # 调整好后 获取ref robot的 pose and velocity
         self._ref_pose = self._calc_ref_pose(time)
         self._ref_vel = self._calc_ref_vel(time)
         self._update_ref_model()
 
+        # 获取当前动作的进度
         self._prev_motion_phase = motion.calc_phase(time)
         self._reset_clip_change_time()
 
         return
+
 
     def _update_ref_motion(self):
         """Updates the reference motion and synchronizes the state of the reference
@@ -665,8 +746,14 @@ class ImitationTask(object):
         time = self._get_motion_time()
         change_clip = self._check_change_clip()
 
+        # 判断是否更换动作
         if change_clip:
+            # 随机选取要参考的动作
             new_motion_id = self._sample_ref_motion()
+            """
+            多动作：
+                更新后 当前活跃的动作就是new_motion_id
+            """
             self._change_ref_motion(new_motion_id)
             self._reset_clip_change_time()
             self._motion_time_offset = self._sample_time_offset()
@@ -674,21 +761,26 @@ class ImitationTask(object):
         motion = self.get_active_motion()
         new_phase = motion.calc_phase(time)
 
+        # 把新的动作同步到相同time（一个被模仿的动作的具体执行不走构成一个时间映射的函数：动作序列与时间的关系）
+        # 上一个动作执行到t时刻 我们要把更新后的动作从t时刻开始做起 这这个t时间不是相对于整个训练过程所消耗的时间
+        # 而是动作的开始与结束过程形成的时间
         if (self._enable_cycle_sync and (new_phase < self._prev_motion_phase)) \
                 or change_clip:
             self._sync_ref_origin(
                 sync_root_position=True, sync_root_rotation=change_clip)
 
+        # 更新ref_state and model
         self._update_ref_state()
         self._update_ref_model()
 
-        self._prev_motion_phase = new_phase
+        self._prev_motion_phase = new_phase     # 动作的节奏
 
         return
 
     def _update_ref_state(self):
         """Calculates and stores the current reference pose and velocity."""
         time = self._get_motion_time()
+        # 对应时间 对应的pose 和 vel
         self._ref_pose = self._calc_ref_pose(time)
         self._ref_vel = self._calc_ref_vel(time)
         return
@@ -776,11 +868,13 @@ class ImitationTask(object):
     def _get_num_joints(self):
         """Get the number of joints in the character's body."""
         pyb = self._get_pybullet_client()
+        # getNumJoints returns an integer value representing the number of joints.
         return pyb.getNumJoints(self._ref_model)
 
     def _get_joint_pose_idx(self, j):
         """Get the starting index of the pose data for a give joint in a pose array."""
         idx = self._joint_pose_idx[j]
+
         return idx
 
     def _get_joint_vel_idx(self, j):
@@ -795,6 +889,7 @@ class ImitationTask(object):
         pose_size = self._joint_pose_size[j]
         assert (pose_size == 1 or
                 pose_size == 0), "Only support 1D and 0D joints at the moment."
+
         return pose_size
 
     def _get_joint_vel_size(self, j):
@@ -806,9 +901,11 @@ class ImitationTask(object):
 
     def get_pose_size(self):
         """Get the total size of a pose array."""
-        num_joints = self._get_num_joints()
+        num_joints = self._get_num_joints()                                  # 12
         pose_size = self._get_joint_pose_idx(
-            num_joints - 1) + self._get_joint_pose_size(num_joints - 1)
+            num_joints - 1) + self._get_joint_pose_size(num_joints - 1)      # pose array index为11的索引（11）
+                                                                             # 加上
+
         return pose_size
 
     def get_vel_size(self):
@@ -818,6 +915,12 @@ class ImitationTask(object):
             num_joints - 1) + self._get_joint_vel_size(num_joints - 1)
         return vel_size
 
+    """
+    getBasePositionAndOrientation()
+        reports the current position and orientation of the base (or root link) of 
+    the body in Cartesian world coordinates. 
+    The orientation is a quaternion in [x,y,z,w] format.
+    """
     def _get_sim_base_position(self):
         pyb = self._get_pybullet_client()
         pos = pyb.getBasePositionAndOrientation(self._env.robot.quadruped)[0]
@@ -830,9 +933,34 @@ class ImitationTask(object):
         rotation = np.array(rotation)
         return rotation
 
+    def _get_sim_joint_pose(self):
+        env = self._env
+        robot = env.robot
+        sim_model = robot.quadruped
+        pyb = self._get_pybullet_client()
+
+        num_joints = pyb.getNumJoints(sim_model)
+        joint_pose = []
+
+        for j in range(num_joints):
+            j_state = pyb.getJointState(sim_model, j)[0]
+            # 这是fixed的joint
+            if j not in [3, 7, 11, 15]:
+                joint_pose.append(j_state)
+
+        return joint_pose
+
     def _get_ref_base_position(self):
         pyb = self._get_pybullet_client()
-        pos = pyb.getBasePositionAndOrientation(self._ref_model)[0]
+        """
+        getBasePositionAndOrientation:
+            getBasePositionAndOrientation reports the current position and 
+        orientation of the base (or root link) of the body in Cartesian world coordinates. 
+        The orientation is a quaternion in [x,y,z,w] format.
+        return:
+            position orientation
+        """
+        pos = pyb.getBasePositionAndOrientation(self._ref_model)[0]  # position
         pos = np.array(pos)
         return pos
 
@@ -842,14 +970,45 @@ class ImitationTask(object):
         rotation = np.array(rotation)
         return rotation
 
+
+    """
+    这是获取参考机器狗的pose函数     论文第四部分的 MOTION RETARGETING
+    公式中X(q_t) and X(t)
+    """
+    def get_current_key_point_pose(self, apply_origin_offset=True):
+
+        motion = self.get_active_motion()
+        root_pos = self._get_sim_base_position()
+        root_rot = self._get_sim_base_rotation()
+
+        pose = np.concatenate([root_pos, root_rot, self._get_sim_joint_pose()])
+
+        if apply_origin_offset:
+            root_rot = transformations.quaternion_multiply(self._origin_offset_rot,
+                                                           root_rot)
+            root_pos = pose3d.QuaternionRotatePoint(root_pos, self._origin_offset_rot)
+            root_pos += self._origin_offset_pos
+
+            motion.set_frame_root_rot(root_rot, pose)
+            motion.set_frame_root_pos(root_pos, pose)
+
+        return pose
+
+    def get_ref_key_point_pose(self):
+        time = self._get_motion_time()
+        pose = self._calc_ref_pose(time)
+
+        return pose
+
     def _calc_ref_pose(self, time, apply_origin_offset=True):
         """Calculates the reference pose for a given point in time.
         Args:
-          time: Time elapsed since the start of the reference motion.
+          time: Time elapsed（过去的） since the start of the reference motion.
           apply_origin_offset: A flag for enabling the origin offset to be applied
             to the pose.
         Returns:
-          An array containing the reference pose at the given point in time.
+          An array containing the reference pose at the given point in time.  （pose 包含position&rotation）
+          （The pose includes:[root position, root orientation, joint poses (e.g. rotations)]）
         """
 
         motion = self.get_active_motion()
@@ -879,7 +1038,7 @@ class ImitationTask(object):
         Args:
           time: Time elapsed since the start of the reference motion.
         Returns:
-          An array containing the reference velocity at the given point in time.
+          An array containing the reference velocity（linear angler） at the given point in time.
         """
         motion = self.get_active_motion()
         enable_warmup_pose = self._curr_episode_warmup \
@@ -901,14 +1060,18 @@ class ImitationTask(object):
 
         return vel
 
+    """
+    这部分作用是不是 与论文第四部分有关？
+    """
     def _calc_ref_pose_warmup(self):
         """Calculate default reference  pose during warmup period."""
         motion = self.get_active_motion()
         pose0 = motion.calc_frame(0)
-        warmup_pose = self._default_pose.copy()
+        warmup_pose = self._default_pose.copy()       # 在获取默认的pose 一开始认为设置的
 
         pose_root_rot = motion.get_frame_root_rot(pose0)
-        default_root_rot = motion.get_frame_root_rot(warmup_pose)
+
+        default_root_rot = motion.get_frame_root_rot(warmup_pose)      # 这些都是默认的姿态数据
         default_root_pos = motion.get_frame_root_pos(warmup_pose)
 
         pose_heading = motion_util.calc_heading(pose_root_rot)
@@ -1012,12 +1175,14 @@ class ImitationTask(object):
 
         return pose
 
+    # 获取默认的body rotation 数据
     def _get_default_root_rotation(self):
         """Get default root rotation."""
         motion = self.get_active_motion()
         root_rot = motion.get_frame_root_rot(self._default_pose)
         return root_rot
 
+    # 随机获取腰训练的动作
     def _sample_ref_motion(self):
         """Samples a motion ID randomly from the set of reference motions.
         Returns:
@@ -1037,8 +1202,11 @@ class ImitationTask(object):
 
     def _check_change_clip(self):
         """Check if the current motion clip should be changed."""
+        # 判断是否改变当前被模仿的动作
         time = self._get_motion_time()
         num_motions = self.get_num_motions()
+
+        # 根据动作执行的时间 与 预定好的改变动作的时间 做对比
         change = (time >= self._clip_change_time) and (num_motions > 1)
         return change
 
@@ -1141,6 +1309,7 @@ class ImitationTask(object):
         """Check if initial state perturbations are enabled."""
         return self._perturb_init_state_prob > 0.0
 
+    # 给训练状态加入干扰 提高模型的鲁棒性
     def _apply_state_perturb(self, pose, vel):
         """Apply random perturbations to the state pose and velocities."""
         root_pos_std = 0.025
@@ -1186,11 +1355,27 @@ class ImitationTask(object):
 
         return perturb_pose, perturb_vel
 
-    def _record_default_pose(self):
+    """
+    获取对应t时刻的q
+    """
+    def get_current_pose(self, env):
+        del env
+        q_t_pose = self._get_sim_base_position()
+        q_t_rot = self._get_sim_base_rotation()
+        q_t_joint_pose = self._get_sim_joint_pose()
+
+        pose = np.concatenate([q_t_pose, q_t_rot, q_t_joint_pose])
+
+        return pose
+
+    def _record_default_pose(self, env):
+        del env
+        # 这个默认pose是自己指定的，论文IV MOTION RETARGETING  正则项要用到
         root_pos = self._env.robot.GetDefaultInitPosition()
         root_rot = self._env.robot.GetDefaultInitOrientation()
         joint_pose = self._env.robot.GetDefaultInitJointPose()
 
+        # 这是body and joint
         pose = np.concatenate([root_pos, root_rot, joint_pose])
 
         return pose
