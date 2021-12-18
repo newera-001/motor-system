@@ -38,8 +38,8 @@ For multi-motion skills learning, I do the one-hot encode for each motion as the
 
 The whole loss function is : alpha * cross_entropy(pre_motion_id, motion_id) + (1 - alpha) * regul_term
 
-     *Part Ⅰ is used to conform that agent can learn current motion
-     *Part Ⅱ is used to conform that agent can act previous motion which had learned 
+     Part Ⅰ is used to conform that agent can learn current motion
+     Part Ⅱ is used to conform that agent can act previous motion which had learned 
      
 And for more details about regul term, please check the original paper.
 
