@@ -32,6 +32,6 @@ python motion_imitation/run_torch.py --mode test --motion_file 'dog_pace.txt' --
 
 ## Extra work
 ### Adaptation
-In this project, I donot use Gaussian distribution to fitting the encoder rather by using a mlp network with one hidden layer. The encoder loss function is softmax(z, dim=0)*advantages. Final loss function is policy + encoder with optimized by Adam synchronously. Because there's no real robot, I do not transfer it to real world for testing.
+In this project, I donot use Gaussian distribution to fitting the encoder rather by using a mlp network with one hidden layer. The encoder loss function is -torch.sum(F.softmax(latent_param, dim=0) * advantages.reshape(-1, 1), dim=1).max(). Final loss function is policy + γ * encoder with optimized by Adam synchronously. Because there's no real robot, I do not transfer it to real world for testing.
 ### Multi-motion skills learning
 pass
