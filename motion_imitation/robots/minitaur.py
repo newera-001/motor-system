@@ -950,6 +950,7 @@ class Minitaur(object):
           ValueError: It is raised when the length of base_mass is not the same as
             the length of self._chassis_link_ids.
         """
+
         if len(base_mass) != len(self._chassis_link_ids):
             raise ValueError(
                 "The length of base_mass {} and self._chassis_link_ids {} are not "
@@ -1402,6 +1403,58 @@ class Minitaur(object):
         self._environment_parameters_value_dict['motor_strength'] = motor_strength
 
         return self._environment_parameters_value_dict
+
+    #
+    def list_to_tuple(self, value_list)->list:
+        start = 1
+        interval = 3
+        list_ = []
+        tuple_ = []
+
+        for value in value_list:
+            tuple_.append(value)
+            if start%interval == 0:
+                list_.append(tuple(tuple_))
+                tuple_ = []
+            start += 1
+
+        return list_
+
+    # 重新载入模型进行训练时，加载当时的环境参数数据
+    def SetEnvironmentParametersForLoad(self,params_value_dict):
+        base_masses = params_value_dict['base_masses']
+        leg_masses = params_value_dict['leg_masses']
+        motor_masses = params_value_dict['motor_masses']
+
+        chassis_inertias = params_value_dict['chassis_inertias']      # 每三个是作一个元组
+        chassis_inertias = self.list_to_tuple(chassis_inertias)
+
+        leg_inertias = params_value_dict['leg_inertias']              # 每三个是作一个元组
+        leg_inertias = self.list_to_tuple(leg_inertias)
+
+        motor_inertias = params_value_dict['motor_inertias']          # 每三个是作一个元组
+        motor_inertias = self.list_to_tuple(motor_inertias)
+
+        foot_friction = params_value_dict['foot_friction']
+        latency = params_value_dict['latency']
+        joint_friction = params_value_dict['joint_friction']
+        motor_friction = params_value_dict['motor_friction']
+        foot_retitution = params_value_dict['foot_retitution']
+        voltage = params_value_dict['voltage']
+        motor_strength = params_value_dict['motor_strength']
+
+        self.SetBaseMasses(base_masses)
+        self.SetLegMasses(leg_masses + motor_masses)
+        self.SetBaseInertias(chassis_inertias)
+        self.SetLegInertias(leg_inertias + motor_inertias)
+        self.SetFootFriction(foot_friction[0])
+        self.SetControlLatency(latency)
+        self.SetJointFriction(joint_friction)
+        self.SetMotorViscousDamping(motor_friction)
+        self.SetFootRestitution(foot_retitution[0])
+        self.SetBatteryVoltage(voltage)
+        self.SetMotorStrengthRatios(motor_strength)
+
 
     @property
     def is_safe(self):
