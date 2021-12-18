@@ -53,7 +53,7 @@ class LocomotionGymEnv(gym.Env):
         self.seed()
         self._gym_config = gym_config
         self._robot_class = robot_class
-        # 这是机器狗上的物理参数信息（由机器狗上对应的传感器获得）
+        # 这是机器狗上的物理参数信息（由机器狗上对应的传感器获得 同时包含仿真环境的）
         self._robot_sensors = robot_sensors
 
         # 这是仿真环境的物理参数信息（由对应的传感器收集获得）
@@ -68,25 +68,27 @@ class LocomotionGymEnv(gym.Env):
         self._env_randomizers = env_randomizers if env_randomizers else []
 
         # This is a workaround due to the issue in b/130128505#comment5
-        if isinstance(self._task, sensor.Sensor):
+        if isinstance(self._task, sensor.Sensor):  # false
             self._sensors.append(self._task)
 
         # Simulation related parameters.
-        self._num_action_repeat = gym_config.simulation_parameters.num_action_repeat
-        self._on_rack = gym_config.simulation_parameters.robot_on_rack
+        self._num_action_repeat = gym_config.simulation_parameters.num_action_repeat  # default 33
+        self._on_rack = gym_config.simulation_parameters.robot_on_rack  # default false
         if self._num_action_repeat < 1:
             raise ValueError('number of action repeats should be at least 1.')
-        self._sim_time_step = gym_config.simulation_parameters.sim_time_step_s
-        self._env_time_step = self._num_action_repeat * self._sim_time_step
+        self._sim_time_step = gym_config.simulation_parameters.sim_time_step_s  # default 0.001
+        self._env_time_step = self._num_action_repeat * self._sim_time_step  # 33 * 0.001
         self._env_step_counter = 0
 
-        self._num_bullet_solver_iterations = int(_NUM_SIMULATION_ITERATION_STEPS /
+        self._num_bullet_solver_iterations = int(_NUM_SIMULATION_ITERATION_STEPS /  # 300 / 33
                                                  self._num_action_repeat)
-        self._is_render = gym_config.simulation_parameters.enable_rendering
+        self._is_render = gym_config.simulation_parameters.enable_rendering  # default false
 
         # The wall-clock time at which the last frame is rendered.
+        # 渲染最后一帧的时间
         self._last_frame_time = 0.0
         self._show_reference_id = -1
+
 
         if self._is_render:
             self._pybullet_client = bullet_client.BulletClient(
@@ -107,8 +109,9 @@ class LocomotionGymEnv(gym.Env):
         self._pybullet_client.setAdditionalSearchPath(pd.getDataPath())
         # loadPlugin 提供一个接口来添加用户自己写的功能插件：比如PD控制 渲染
         if gym_config.simulation_parameters.egl_rendering:
-            self._pybullet_client.loadPlugin('eglRendererPlugin') # eglPlugin这个能 enabled to use hardware OpenGL 3.x rendering
-                                                                  # without a X11 context
+            self._pybullet_client.loadPlugin(
+                'eglRendererPlugin')  # eglPlugin这个能 enabled to use hardware OpenGL 3.x rendering
+            # without a X11 context
 
         # The action list contains the name of all actions.
         self._build_action_space()
@@ -123,7 +126,7 @@ class LocomotionGymEnv(gym.Env):
         self._hard_reset = True
         self.reset()
 
-        self._hard_reset = gym_config.simulation_parameters.enable_hard_reset
+        self._hard_reset = gym_config.simulation_parameters.enable_hard_reset  # default false
 
         # Construct the observation space from the list of sensors. Note that we
         # will reconstruct the observation_space after the robot is created.
@@ -173,16 +176,21 @@ class LocomotionGymEnv(gym.Env):
     def seed(self, seed=None):
         self.np_random, self.np_random_seed = seeding.np_random(seed)
         return [self.np_random_seed]
-    
+
     def get_env_parameters(self):
         """Returns all environment parameters"""
         mu_params = self._robot.GetEnvironmentParameters()
 
         return mu_params
-    
+
+    def set_env_parameters_for_reload(self, params_values_dist):
+        self._robot.SetEnvironmentParametersForLoad(params_values_dist)
+
+    # 修改数据
     def all_sensors(self):
         """Returns all robot and environmental sensors."""
-        return self._robot.GetAllSensors() + self._sensors
+        return self._robot.GetAllSensors() + self._sensors  # robot上的和仿真环境的
+        # return self._robot.GetAllSensors()
 
     def sensor_by_name(self, name):
         """Returns the sensor with the given name, or None if not exist."""
@@ -268,16 +276,18 @@ class LocomotionGymEnv(gym.Env):
             self._task.reset(self)
 
         # Loop over all env randomizers.
+        # 在test的时候这个并没有执行
         for env_randomizer in self._env_randomizers:
             env_randomizer.randomize_env(self)
 
-        return self._get_observation()
+        return self._get_observation()  # sensor 获取到的数值
+
 
     def step(self, action):
         """Step forward the simulation, given the action.
         Args:
           action: Can be a list of desired motor angles for all motors when the
-            robot is in position control mode; A list of desired motor torques. Or a
+            robot is in position control mode（本次使用的是position mode）; A list of desired motor torques. Or a
             list of tuples (q, qdot, kp, kd, tau) for hybrid control mode. The
             action must be compatible with the robot's motor control mode. Also, we
             are not going to use the leg space (swing/extension) definition at the
@@ -292,6 +302,8 @@ class LocomotionGymEnv(gym.Env):
           ValueError: The action dimension is not the same as the number of motors.
           ValueError: The magnitude of actions is out of bounds.
         """
+
+
         self._last_base_position = self._robot.GetBasePosition()
         self._last_action = action
 
@@ -303,15 +315,16 @@ class LocomotionGymEnv(gym.Env):
             time_to_sleep = self._env_time_step - time_spent
             if time_to_sleep > 0:
                 time.sleep(time_to_sleep)
-            base_pos = self._robot.GetBasePosition()
+            base_pos = self._robot.GetBasePosition()              # 机器狗body的pos
 
             # Also keep the previous orientation of the camera set by the user.
-            [yaw, pitch,
-             dist] = self._pybullet_client.getDebugVisualizerCamera()[8:11]
+            [yaw, pitch, dist] = self._pybullet_client.getDebugVisualizerCamera()[8:11]
             self._pybullet_client.resetDebugVisualizerCamera(dist, yaw, pitch,
                                                              base_pos)
             self._pybullet_client.configureDebugVisualizer(
                 self._pybullet_client.COV_ENABLE_SINGLE_STEP_RENDERING, 1)
+
+            # 下面是被模仿的机器狗渲染设置
             alpha = 1.
             if self._show_reference_id >= 0:
                 alpha = self._pybullet_client.readUserDebugParameter(self._show_reference_id)
@@ -326,25 +339,31 @@ class LocomotionGymEnv(gym.Env):
             if (delay > 0):
                 time.sleep(delay)
 
+        # 论文IV：A Domain Randomization
+        # 对仿真环境物理参数进行随机赋值 dynamic parameters？如果是可以从这里获取一组dynamic parameters 出来
         for env_randomizer in self._env_randomizers:
+            # 但是randomize step 这个函数是空的 没有重写 而且这样子是每一步都随机化环境，最好不是收集一次buffer 重置一次环境吗？
             env_randomizer.randomize_step(self)
 
+        # 执行动作 并收集observation
         # robot class and put the logics here.
-        self._robot.Step(action)
+        self._robot.Step(action)              # 只是执行动作
 
-        for s in self.all_sensors():
+        for s in self.all_sensors():          # 更新last_base_position current_base_position
+                                              # last_yaw current_yaw
             s.on_step(self)
 
-        if self._task and hasattr(self._task, 'update'):
+        if self._task and hasattr(self._task, 'update'):    # 更新参考动作并获取当前机器狗的base_position
             self._task.update(self)
 
-        reward = self._reward()
+        reward = self._reward()               # 获取对应的reward
 
-        done = self._termination()
+        done = self._termination()            # 判断当前episode是否结束
         self._env_step_counter += 1
         if done:
             self._robot.Terminate()
-        return self._get_observation(), reward, done, {}
+
+        return self._get_observation(), reward, done, {}     # 传感器上的数据， reward， done， info
 
     def render(self, mode='rgb_array'):
         if mode != 'rgb_array':
@@ -372,6 +391,7 @@ class LocomotionGymEnv(gym.Env):
         rgb_array = rgb_array[:, :, :3]
         return rgb_array
 
+    #  获取仿真环境里的地面
     def get_ground(self):
         """Get simulation ground model."""
         return self._world_dict['ground']
@@ -413,17 +433,19 @@ class LocomotionGymEnv(gym.Env):
             return self._task(self)
         return 0
 
-    def _get_observation(self):
+    def _get_observation(self)->dict:
         """Get observation of this environment from a list of sensors.
         Returns:
           observations: sensory observation in the numpy array format
         """
-        sensors_dict = {}
+        sensors_dict = {}    # robot上的
         for s in self.all_sensors():
             sensors_dict[s.get_name()] = s.get_observation()
 
         observations = collections.OrderedDict(sorted(list(sensors_dict.items())))
+
         return observations
+
 
     def set_time_step(self, num_action_repeat, sim_step=0.001):
         """Sets the time step of the environment.
@@ -454,6 +476,7 @@ class LocomotionGymEnv(gym.Env):
           Time in seconds since the last reset.
         """
         return self._robot.GetTimeSinceReset()
+
 
     @property
     def pybullet_client(self):
